@@ -5,30 +5,40 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 )
 
-func handleConnection(conn net.Conn) {
+var wg sync.WaitGroup
+
+func Read(conn net.Conn) {
+	reader := bufio.NewReader(conn)
+	for {
+		str, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("Disconnected from server.\n")
+			wg.Done()
+			return
+		}
+		fmt.Print(str)
+	}
+}
+
+func Write(conn net.Conn) {
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(conn)
+
 	for {
-		fmt.Print(">> ")
-		text, _ := reader.ReadString('\n')
-		writer.WriteString(text)
+		str, _ := reader.ReadString('\n')
+		writer.WriteString(str)
 		writer.Flush()
-		message, _ := bufio.NewReader(conn).ReadString('\n')
-		fmt.Print(message)
 
 	}
-
 }
 
 func main() {
-	conn, err := net.Dial("tcp", "127.0.0.1:8081")
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println("Connection established!")
-	for {
-		handleConnection(conn)
-	}
+	wg.Add(1)
+	conn, _ := net.Dial("tcp", ":8081")
+	go Write(conn)
+	go Read(conn)
+	wg.Wait()
 }
