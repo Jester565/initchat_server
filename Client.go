@@ -2,33 +2,97 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"encoding/binary"
+	"github.com/golang/protobuf/proto"
+	"io"
+	"log"
 	"net"
-	"os"
+	"./Messages"
 )
 
-func handleConnection(conn net.Conn) {
-	reader := bufio.NewReader(os.Stdin)
-	writer := bufio.NewWriter(conn)
-	for {
-		fmt.Print(">> ")
-		text, _ := reader.ReadString('\n')
-		writer.WriteString(text)
-		writer.Flush()
-		message, _ := bufio.NewReader(conn).ReadString('\n')
-		fmt.Print(message)
+var PreHeaderLength = 2
 
-	}
-
+type Client struct {
+	connection *net.Conn
+	sendChannel chan *Message
+	recvChannel chan *Message
+	disconnectChannel chan *Client
+	username *string
+	groupName *string
 }
 
-func main() {
-	conn, err := net.Dial("tcp", "127.0.0.1:8081")
-	if err != nil {
-		fmt.Println(err)
+func (client *Client) send(typeID string, body []byte) {
+	msg := Message {
+		typeID: typeID,
+		body: body,
 	}
-	fmt.Println("Connection established!")
+	client.sendChannel <- &msg
+}
+
+func (client *Client) runSend() {
+	//writer := bufio.NewWriter(*client.connection)
 	for {
-		handleConnection(conn)
+		msg := <-client.sendChannel
+		bodySize := int32(len(msg.body))
+		header := &Messages.Header{Id: msg.typeID, Length: bodySize}
+		headerData, err := proto.Marshal(header)
+		if err != nil {
+			log.Fatal("Header Serialization Failed: ", err)
+			return
+		}
+		headerSize := uint16(len(headerData))
+		preHeaderData := make([]byte, PreHeaderLength)
+		binary.BigEndian.PutUint16(preHeaderData, headerSize)
+		data := append(preHeaderData, headerData...)
+		data = append(data, msg.body...)
+		_, writeErr := (*client.connection).Write(data)
+		//nBytes, writeErr := writer.Write(data)
+		if writeErr != nil {
+			log.Println("WriteErr: ", writeErr)
+			return
+		}
+	}
+}
+
+func (client *Client) onDisconnect() {
+	client.disconnectChannel <- client
+}
+
+func (client *Client) runRead() {
+	//Close connection if read return
+	reader := bufio.NewReader(*(*client).connection)
+	defer client.onDisconnect()
+	for {
+		preHeaderData := make([]byte, PreHeaderLength)
+		_, preHeaderErr := io.ReadFull(reader, preHeaderData)
+		if preHeaderErr != nil {
+			log.Println("Client Disconnected: ", preHeaderErr)
+			return
+		}
+		headerSize := binary.BigEndian.Uint16(preHeaderData)
+
+		headerData := make([]byte, headerSize)
+		_, headerErr := io.ReadFull(reader, headerData)
+		if headerErr != nil {
+			log.Print("Client Disconnected: ", headerErr)
+			return
+		}
+		header := &Messages.Header{}
+		if parseErr := proto.Unmarshal(headerData, header); parseErr != nil {
+			log.Print("Header Parse Error", parseErr)
+			return
+		}
+		typeID := header.GetId()
+		bodySize := header.GetLength()
+
+		bodyData := make([]byte, bodySize)
+		_, bodyErr := io.ReadFull(reader, bodyData)
+		if bodyErr != nil {
+			log.Print("Client Disconnected", bodyErr)
+			return
+		}
+
+		message := Message{typeID, bodyData, client}
+		client.recvChannel <- &message
 	}
 }

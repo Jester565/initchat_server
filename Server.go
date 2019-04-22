@@ -1,56 +1,169 @@
 package main
 
 import (
-	"bufio"
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 )
 
-type Client struct {
-	writer   *bufio.Writer
-	reader   *bufio.Reader
-	conn     net.Conn
-	UserName string
-}
+import _ "github.com/go-sql-driver/mysql"
 
-func newClient(conn net.Conn) {
-	writer := bufio.NewWriter(conn)
-	reader := bufio.NewReader(conn)
-	client := &Client{UserName: "UserExample",
-		writer: writer,
-		reader: reader,
+type MsgHandler func(message *Message, sql *sql.DB)
+
+var clients = map[*Client]bool{}
+var msgHandlers = map[string]MsgHandler{}
+
+func onConnection(connection *net.Conn, connectChannel chan *Client, recvMsgChannel chan *Message, disconnectChannel chan *Client) {
+	client := &Client{
+		connection: connection,
+		sendChannel: make(chan *Message),
+		recvChannel: recvMsgChannel,
+		disconnectChannel: disconnectChannel,
+		username: nil,
 	}
-	client.handler(conn)
+	connectChannel <- client
 }
 
-func (client *Client) handler(conn net.Conn) {
+func initClient(client *Client) {
+	clients[client] = true
+	go client.runSend()
+	go client.runRead()
+	log.Println("CLIENT INTIALIZED")
+}
+
+func handleMessage(message *Message, sql *sql.DB) {
+	handler, containsHandler := msgHandlers[message.typeID]
+	if containsHandler {
+		handler(message, sql)
+	} else {
+		log.Println("No type handler for id: ", message.typeID)
+	}
+}
+
+func disconnectClient(client *Client) {
+	delete(clients, client)
+
+	//Delete from groups
+	if client.groupName != nil {
+		activeGroupsMutex.Lock()
+		group, hasGroup := activeGroups[*client.groupName]
+		if hasGroup {
+			delete(group.clients, client)
+			if len(group.clients) == 0 {
+				delete(activeGroups, *client.groupName)
+			}
+		}
+		activeGroupsMutex.Unlock()
+	}
+
+	err := (*client.connection).Close()
+	if err != nil {
+		log.Println("Connection Close Error: ", err)
+	}
+}
+
+func runNetEvents(connectChannel chan *Client, recvMsgChannel chan *Message, disconnectChannel chan *Client, sql *sql.DB) {
 	for {
-		message, _ := client.reader.ReadString('\n')
-		fmt.Print("Message Received:", string(message))
-		appendMessage := client.UserName + " >> " + message
-		//client.incoming <- message
-		client.writer.WriteString(appendMessage)
-		client.writer.Flush()
+		select {
+			case msg, more := <- recvMsgChannel:
+				if !more {
+					return
+				}
+				log.Println("RUN MESSAGE: ", msg.typeID)
+				handleMessage(msg, sql)
+			case client, more := <- connectChannel:
+				if !more {
+					return
+				}
+				initClient(client)
+			case client, more := <- disconnectChannel:
+				if !more {
+					return
+				}
+				disconnectClient(client)
+		}
 	}
 }
 
-func getUserName() string {
-	fmt.Println("Please choose a username.")
-	reader := bufio.NewReader(os.Stdin)
-	name, _ := reader.ReadString('\n')
-	fmt.Print(name)
-	return name
+func linkHandlers() {
+	msgHandlers["signUp"] = createAccountHandler
+	msgHandlers["login"] = loginHandler
+	msgHandlers["createGroup"] = createGroupHandler
+	msgHandlers["getGroups"] = getGroupsHandler
+	msgHandlers["searchUsers"] = searchHandler
+	msgHandlers["invite"] = inviteToGroupHandler
+	msgHandlers["getInvites"] = getInvitesHandler
+	msgHandlers["acceptInvite"] = acceptInviteHandler
+	msgHandlers["deleteInvite"] = deleteInviteHandler
+	msgHandlers["joinGroup"] = joinGroupHandler
+}
 
+type Configuration struct {
+	ListenAddress string
+	ListenPort string
+	DbAddress string
+	DbPort string
+	DbUser string
+	DbPwd string
+	DbDb string
+}
+
+func readConfig(filename string) (*Configuration, error) {
+	file, fErr := os.Open(filename)
+	if fErr != nil {
+		log.Println("File open error: ", fErr)
+		return nil, fErr
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	configuration := Configuration{}
+	err := decoder.Decode(&configuration)
+	if err != nil {
+		return nil, err
+	}
+	return &configuration, nil
+}
+
+func runServer(config *Configuration, db *sql.DB) {
+	connectChannel := make(chan *Client)
+	recvMsgChannel := make(chan *Message)
+	disconnectChannel := make(chan *Client)
+	go runNetEvents(connectChannel, recvMsgChannel, disconnectChannel, db)
+
+	l, err := net.Listen("tcp", "0.0.0.0:2750")
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer l.Close()
+	for {
+		log.Println("LISTENING FOR CONNECTION")
+		connection, err := l.Accept()
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		onConnection(&connection, connectChannel, recvMsgChannel, disconnectChannel)
+		log.Println("CONNECTION ACCEPTED")
+	}
 }
 
 func main() {
+	linkHandlers()
 
-	fmt.Println("Launching server...")
-	ln, _ := net.Listen("tcp", ":8081")
-
-	for {
-		conn, _ := ln.Accept()
-		newClient(conn)
+	config, err := readConfig("config.json")
+	if err != nil {
+		log.Fatalln("Could not read config: ", err)
+		return
 	}
+	dbConStr := config.DbUser + ":" + config.DbPwd + "@tcp(" + config.DbAddress + ":" + config.DbPort + ")/" + config.DbDb
+	db, err := sql.Open("mysql", dbConStr)
+	if err != nil {
+		log.Fatalln("Could not connect to database: ", err)
+		return
+	}
+	runServer(config, db)
 }

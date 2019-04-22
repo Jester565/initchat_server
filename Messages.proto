@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+message Header {
+    string id = 1;
+    int32 length = 2;
+}
+
+message SignUpReq {
+    string username = 1;
+    string password = 2;
+}
+
+message LoginReq {
+    string username = 1;
+    string password = 2;
+}
+
+message AuthResp {
+    string token = 1;
+    uint64 expireTime = 2;
+}
+
+message UserSearchReq {
+    string usernamePrefix = 1;
+}
+
+message UserSearchResp {
+    repeated string usernames = 1;
+}
+
+message TextMessageReq {
+    string message = 1;
+}
+
+message TextMessageResp {
+    string message = 1;
+    string username = 2;
+}
+
+message FileMessageReq {
+    string name = 1;
+    bytes contents = 2;
+}
+
+message FileMessageResp {
+    string name = 1;
+    string username = 2;
+}
+
+message ListInvitesReq {}
+
+message InvitesResp {
+    message Invite {
+        string inviteID = 1;
+        string fromUsername = 2;
+        string groupName = 3;
+    }
+    repeated Invite invites = 1;
+}
+
+message InviteReq {
+    string username = 1;
+}
+
+message AcceptInviteReq {
+    string inviteID = 1;
+}
+
+message DeleteInviteReq {
+    string inviteID = 1;
+}
+
+message ListGroupsReq {}
+
+message CreateGroupReq {
+    string groupName = 1;
+}
+
+message JoinGroupReq {
+    string groupName = 1;
+}
+
+message LeaveGroupReq {}
+
+message GroupsResp {
+    repeated string groupNames = 1;
+}
+
+message Error {
+    string message = 1;
+    int32 code = 2;
+}
