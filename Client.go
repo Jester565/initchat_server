@@ -30,10 +30,12 @@ func (client *Client) send(typeID string, body []byte) {
 }
 
 func (client *Client) runSend() {
-	//writer := bufio.NewWriter(*client.connection)
 	for {
 		msg := <-client.sendChannel
-		bodySize := int32(len(msg.body))
+		bodySize := int32(0)
+		if msg.body != nil {
+			bodySize = int32(len(msg.body))
+		}
 		header := &Messages.Header{Id: msg.typeID, Length: bodySize}
 		headerData, err := proto.Marshal(header)
 		if err != nil {
@@ -44,7 +46,9 @@ func (client *Client) runSend() {
 		preHeaderData := make([]byte, PreHeaderLength)
 		binary.BigEndian.PutUint16(preHeaderData, headerSize)
 		data := append(preHeaderData, headerData...)
-		data = append(data, msg.body...)
+		if msg.body != nil {
+			data = append(data, msg.body...)
+		}
 		_, writeErr := (*client.connection).Write(data)
 		//nBytes, writeErr := writer.Write(data)
 		if writeErr != nil {
@@ -59,7 +63,6 @@ func (client *Client) onDisconnect() {
 }
 
 func (client *Client) runRead() {
-	//Close connection if read return
 	reader := bufio.NewReader(*(*client).connection)
 	defer client.onDisconnect()
 	for {
@@ -84,12 +87,13 @@ func (client *Client) runRead() {
 		}
 		typeID := header.GetId()
 		bodySize := header.GetLength()
-
 		bodyData := make([]byte, bodySize)
-		_, bodyErr := io.ReadFull(reader, bodyData)
-		if bodyErr != nil {
-			log.Print("Client Disconnected", bodyErr)
-			return
+		if bodySize > 0 {
+			_, bodyErr := io.ReadFull(reader, bodyData)
+			if bodyErr != nil {
+				log.Print("Client Disconnected", bodyErr)
+				return
+			}
 		}
 
 		message := Message{typeID, bodyData, client}

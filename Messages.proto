@@ -32,22 +32,16 @@ message TextMessageReq {
     string message = 1;
 }
 
-message TextMessageResp {
-    string message = 1;
-    string username = 2;
+message TextMessage {
+    string username = 1;
+    string message  = 2;
+    uint64 time = 3;
 }
 
 message FileMessageReq {
     string name = 1;
     bytes contents = 2;
 }
-
-message FileMessageResp {
-    string name = 1;
-    string username = 2;
-}
-
-message ListInvitesReq {}
 
 message InvitesResp {
     message Invite {
@@ -70,8 +64,6 @@ message DeleteInviteReq {
     string inviteID = 1;
 }
 
-message ListGroupsReq {}
-
 message CreateGroupReq {
     string groupName = 1;
 }
@@ -80,7 +72,9 @@ message JoinGroupReq {
     string groupName = 1;
 }
 
-message LeaveGroupReq {}
+message GroupResp {
+    repeated TextMessage messages = 1;
+}
 
 message GroupsResp {
     repeated string groupNames = 1;

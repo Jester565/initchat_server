@@ -46,18 +46,7 @@ func handleMessage(message *Message, sql *sql.DB) {
 func disconnectClient(client *Client) {
 	delete(clients, client)
 
-	//Delete from groups
-	if client.groupName != nil {
-		activeGroupsMutex.Lock()
-		group, hasGroup := activeGroups[*client.groupName]
-		if hasGroup {
-			delete(group.clients, client)
-			if len(group.clients) == 0 {
-				delete(activeGroups, *client.groupName)
-			}
-		}
-		activeGroupsMutex.Unlock()
-	}
+	leaveActiveGroup(client)
 
 	err := (*client.connection).Close()
 	if err != nil {
@@ -99,6 +88,9 @@ func linkHandlers() {
 	msgHandlers["acceptInvite"] = acceptInviteHandler
 	msgHandlers["deleteInvite"] = deleteInviteHandler
 	msgHandlers["joinGroup"] = joinGroupHandler
+	msgHandlers["textMsg"] = textMessageHandler
+	msgHandlers["leaveGroup"] = leaveGroupHandler
+	msgHandlers["refreshGroup"] = refreshGroupHandler
 }
 
 type Configuration struct {

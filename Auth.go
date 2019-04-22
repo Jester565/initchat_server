@@ -137,7 +137,7 @@ func searchUsers(usernamePrefix string, username string, sql *sql.DB) ([]string,
 		log.Fatalln("MySQL Prepare Error: ", prepErr)
 		return nil, prepErr
 	}
-	rows, execErr := stmt.Query(username)
+	rows, execErr := stmt.Query(usernamePrefix, username)
 	if execErr != nil {
 		log.Println("Query Error: ", execErr)
 		return nil, execErr
@@ -167,7 +167,7 @@ func searchHandler(message *Message, sql *sql.DB) {
 				log.Fatalln("SERIALIZE ERROR: ", serializeErr)
 				return
 			}
-			message.client.send("userSearchError", errorData)
+			message.client.send("userSearchErr", errorData)
 			return
 		}
 		usernamesMsg := Messages.UserSearchResp{ Usernames: usernames }

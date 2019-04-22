@@ -8,13 +8,14 @@ import (
 	"github.com/google/uuid"
 	"log"
 	"sync"
+	"time"
 )
 
 type Group struct {
 	clients map[*Client]bool
 }
 
-var activeGroups = map[string]*Group{}
+var activeGroups = make(map[string]*Group)
 var activeGroupsMutex = sync.RWMutex{}
 
 func addUserToGroup(groupName string, username string, sql *sql.DB) error {
@@ -45,6 +46,23 @@ func createGroup(groupName string, sql *sql.DB) error {
 	return nil
 }
 
+func sendGroup(groupName string, client *Client, sql *sql.DB) error {
+	messages, err := getGroupMessages(groupName, sql)
+	if err != nil {
+		return err
+	}
+	groupMsg := Messages.GroupResp{
+		Messages: messages,
+	}
+	groupData, serializeErr := proto.Marshal(&groupMsg)
+	if serializeErr != nil {
+		log.Fatalln("SERIALIZE ERR: ", serializeErr)
+		return serializeErr
+	}
+	client.send("group", groupData)
+	return nil
+}
+
 func createGroupHandler(message *Message, sql *sql.DB) {
 	var createGroupRunner = func() {
 		createGroupMsg := Messages.CreateGroupReq{}
@@ -57,7 +75,10 @@ func createGroupHandler(message *Message, sql *sql.DB) {
 		if err == nil {
 			err = addUserToGroup(createGroupMsg.GroupName, *message.client.username, sql)
 			if err == nil {
-				err = joinActiveGroup(createGroupMsg.GroupName, message.client, sql)
+				err = sendGroup(createGroupMsg.GroupName, message.client, sql)
+				if err == nil {
+					err = joinActiveGroup(createGroupMsg.GroupName, message.client, sql)
+				}
 			}
 		}
 		if err != nil {
@@ -67,7 +88,7 @@ func createGroupHandler(message *Message, sql *sql.DB) {
 				log.Fatalln("SERIALIZE ERROR: ", serializeErr)
 				return
 			}
-			message.client.send("createGroupError", errorData)
+			message.client.send("createGroupErr", errorData)
 			return
 		}
 	}
@@ -173,10 +194,10 @@ func acceptInviteHandler(message *Message, sql *sql.DB) {
 				log.Fatalln("SERIALIZE ERROR: ", serializeErr)
 				return
 			}
-			message.client.send("acceptInviteError", errorData)
+			message.client.send("acceptInviteErr", errorData)
 			return
 		}
-
+		sendInvites(message.client, sql)
 	}
 	go acceptInviteRunner()
 }
@@ -200,6 +221,7 @@ func deleteInviteHandler(message *Message, sql *sql.DB) {
 			message.client.send("deleteInviteError", errorData)
 			return
 		}
+		sendInvites(message.client, sql)
 	}
 	go deleteInviteRunner()
 }
@@ -234,7 +256,7 @@ func getGroupsHandler(message *Message, sql *sql.DB) {
 				log.Fatalln("SERIALIZE ERROR: ", serializeErr)
 				return
 			}
-			message.client.send("getGroupsError", errorData)
+			message.client.send("getGroupsErr", errorData)
 			return
 		}
 		groupsMsg := Messages.GroupsResp{GroupNames: groupNames}
@@ -282,37 +304,38 @@ func getUserInvites(username string, sql *sql.DB) ([]Invite, error) {
 }
 
 func getInvitesHandler(message *Message, sql *sql.DB) {
-	var getInvitesRunner = func() {
-		invites, err := getUserInvites(*message.client.username, sql)
-		if err != nil {
-			errorMsg := Messages.Error{Message: err.Error()}
-			errorData, serializeErr := proto.Marshal(&errorMsg)
-			if serializeErr != nil {
-				log.Fatalln("SERIALIZE ERROR: ", serializeErr)
-				return
-			}
-			message.client.send("getInvitesError", errorData)
-			return
-		}
+	go sendInvites(message.client, sql)
+}
 
-		var protoInvites []*Messages.InvitesResp_Invite
-		for _, invite := range invites {
-			protoInvite := Messages.InvitesResp_Invite{
-				InviteID: invite.inviteID,
-				FromUsername: invite.fromUsername,
-				GroupName: invite.groupName,
-			}
-			protoInvites = append(protoInvites, &protoInvite)
-		}
-		invitesMsg := Messages.InvitesResp{Invites: protoInvites}
-		invitesData, serializeErr := proto.Marshal(&invitesMsg)
+func sendInvites(client *Client, sql *sql.DB) {
+	invites, err := getUserInvites(*client.username, sql)
+	if err != nil {
+		errorMsg := Messages.Error{Message: err.Error()}
+		errorData, serializeErr := proto.Marshal(&errorMsg)
 		if serializeErr != nil {
 			log.Fatalln("SERIALIZE ERROR: ", serializeErr)
 			return
 		}
-		message.client.send("getInvites", invitesData)
+		client.send("getInvitesError", errorData)
+		return
 	}
-	go getInvitesRunner()
+
+	var protoInvites []*Messages.InvitesResp_Invite
+	for _, invite := range invites {
+		protoInvite := Messages.InvitesResp_Invite{
+			InviteID: invite.inviteID,
+			FromUsername: invite.fromUsername,
+			GroupName: invite.groupName,
+		}
+		protoInvites = append(protoInvites, &protoInvite)
+	}
+	invitesMsg := Messages.InvitesResp{Invites: protoInvites}
+	invitesData, serializeErr := proto.Marshal(&invitesMsg)
+	if serializeErr != nil {
+		log.Fatalln("SERIALIZE ERROR: ", serializeErr)
+		return
+	}
+	client.send("getInvites", invitesData)
 }
 
 func isInGroup(username string, groupName string, sql *sql.DB) (bool, error) {
@@ -344,13 +367,97 @@ func joinActiveGroup(groupName string, client *Client, sql *sql.DB) error {
 	activeGroupsMutex.Lock()
 	activeGroup, hasGroup := activeGroups[groupName]
 	if !hasGroup {
-		activeGroup = &Group{}
+		activeGroup = &Group{
+			clients: make(map [*Client]bool),
+		}
 		activeGroups[groupName] = activeGroup
 	}
 	activeGroup.clients[client] = true
-	*client.groupName = groupName
+	client.groupName = &groupName
 	activeGroupsMutex.Unlock()
+	addGroupMessage(*client.username + " joined the group", groupName, *client.username, sql)
 	return nil
+}
+
+func getGroupMessages(groupName string, sql *sql.DB) ([]*Messages.TextMessage, error) {
+	stmt, prepErr := sql.Prepare("SELECT creator, contents, creationTime FROM Messages WHERE groupName=? ORDER BY creationTime")
+	if prepErr != nil {
+		log.Fatalln("MySQL Prepare Error: ", prepErr)
+		return nil, prepErr
+	}
+	rows, execErr := stmt.Query(groupName)
+	if execErr != nil {
+		log.Println("Query Error: ", execErr)
+		return nil, execErr
+	}
+	var messages []*Messages.TextMessage
+	for rows.Next() {
+		var creator string
+		var contents string
+		var creationTime uint64
+		rows.Scan(&creator, &contents, &creationTime)
+		messages = append(messages, &Messages.TextMessage{
+			Username: creator,
+			Message: contents,
+			Time: creationTime,
+		})
+	}
+	return messages, nil
+}
+
+func storeGroupMessage(contents string, creationTime uint64, groupName string, username string, sql *sql.DB) error {
+	stmt, prepErr := sql.Prepare("INSERT INTO Messages VALUES (?, ?, ?, ?)")
+	if prepErr != nil {
+		log.Fatalln("MySQL Prepare Error: ", prepErr)
+		return prepErr
+	}
+	_, execErr := stmt.Exec(groupName, username, contents, creationTime)
+	if execErr != nil {
+		log.Println("Query Error: ", execErr)
+		return execErr
+	}
+	return nil
+}
+
+func sendGroupMessage(contents string, creationTime uint64, groupName string, username string) error {
+	activeGroupsMutex.RLock()
+	defer activeGroupsMutex.RUnlock()
+	group, hasGroup := activeGroups[groupName]
+	if hasGroup {
+		textMsg := Messages.TextMessage{
+			Username: username,
+			Message: contents,
+			Time: creationTime,
+		}
+		textMsgData, serializeErr := proto.Marshal(&textMsg)
+		if serializeErr != nil {
+			log.Fatalln("Serialize Err: ", serializeErr)
+			return serializeErr
+		}
+		for client, _ := range group.clients {
+			if *client.username != username {
+				client.send("message", textMsgData)
+			}
+		}
+	}
+	return nil
+}
+
+func addGroupMessage(contents string, groupName string, username string, db *sql.DB) {
+	creationTime := uint64(time.Now().Unix())
+	go storeGroupMessage(contents, creationTime, groupName, username, db)
+	go sendGroupMessage(contents, creationTime, groupName, username)
+}
+
+func textMessageHandler(message *Message, sql *sql.DB) {
+	textMsg := Messages.TextMessageReq{}
+	parseErr := proto.Unmarshal(message.body, &textMsg)
+	if parseErr != nil {
+		log.Fatalln("PARSE ERROR: ", parseErr)
+		return
+	}
+	log.Println("MESSAGE SENT: ", textMsg.Message)
+	addGroupMessage(textMsg.Message, *message.client.groupName, *message.client.username, sql)
 }
 
 func joinGroupHandler(message *Message, sql *sql.DB) {
@@ -361,6 +468,9 @@ func joinGroupHandler(message *Message, sql *sql.DB) {
 		return
 	}
 	err := joinActiveGroup(joinGroupMsg.GroupName, message.client, sql)
+	if err == nil {
+		err = sendGroup(joinGroupMsg.GroupName, message.client, sql)
+	}
 	if err != nil {
 		errorMsg := Messages.Error{Message: err.Error()}
 		errorData, serializeErr := proto.Marshal(&errorMsg)
@@ -371,4 +481,27 @@ func joinGroupHandler(message *Message, sql *sql.DB) {
 		message.client.send("joinGroupError", errorData)
 		return
 	}
+}
+
+func leaveActiveGroup(client *Client) {
+	//Delete from groups
+	if client.groupName != nil {
+		activeGroupsMutex.Lock()
+		group, hasGroup := activeGroups[*client.groupName]
+		if hasGroup {
+			delete(group.clients, client)
+			if len(group.clients) == 0 {
+				delete(activeGroups, *client.groupName)
+			}
+		}
+		activeGroupsMutex.Unlock()
+	}
+}
+
+func leaveGroupHandler(message *Message, _ *sql.DB) {
+	leaveActiveGroup(message.client)
+}
+
+func refreshGroupHandler(message *Message, sql *sql.DB) {
+	sendGroup(*message.client.groupName, message.client, sql)
 }
