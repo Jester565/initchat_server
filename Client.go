@@ -1,19 +1,25 @@
 package main
 
 import (
+	"./Messages"
 	"bufio"
+	"crypto/tls"
 	"encoding/binary"
 	"github.com/golang/protobuf/proto"
 	"io"
 	"log"
-	"net"
-	"./Messages"
 )
 
 var PreHeaderLength = 2
 
+type Message struct {
+	typeID string
+	body []byte
+	client *Client
+}
+
 type Client struct {
-	connection *net.Conn
+	connection *tls.Conn
 	sendChannel chan *Message
 	recvChannel chan *Message
 	disconnectChannel chan *Client
@@ -49,8 +55,7 @@ func (client *Client) runSend() {
 		if msg.body != nil {
 			data = append(data, msg.body...)
 		}
-		_, writeErr := (*client.connection).Write(data)
-		//nBytes, writeErr := writer.Write(data)
+		_, writeErr := client.connection.Write(data)
 		if writeErr != nil {
 			log.Println("WriteErr: ", writeErr)
 			return
@@ -63,7 +68,7 @@ func (client *Client) onDisconnect() {
 }
 
 func (client *Client) runRead() {
-	reader := bufio.NewReader(*(*client).connection)
+	reader := bufio.NewReader((*client).connection)
 	defer client.onDisconnect()
 	for {
 		preHeaderData := make([]byte, PreHeaderLength)
@@ -77,12 +82,12 @@ func (client *Client) runRead() {
 		headerData := make([]byte, headerSize)
 		_, headerErr := io.ReadFull(reader, headerData)
 		if headerErr != nil {
-			log.Print("Client Disconnected: ", headerErr)
+			log.Println("Client Disconnected: ", headerErr)
 			return
 		}
 		header := &Messages.Header{}
 		if parseErr := proto.Unmarshal(headerData, header); parseErr != nil {
-			log.Print("Header Parse Error", parseErr)
+			log.Fatalln("Header Parse Error", parseErr)
 			return
 		}
 		typeID := header.GetId()
@@ -91,7 +96,7 @@ func (client *Client) runRead() {
 		if bodySize > 0 {
 			_, bodyErr := io.ReadFull(reader, bodyData)
 			if bodyErr != nil {
-				log.Print("Client Disconnected", bodyErr)
+				log.Println("Client Disconnected", bodyErr)
 				return
 			}
 		}

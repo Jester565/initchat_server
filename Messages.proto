@@ -43,6 +43,15 @@ message FileMessageReq {
     bytes contents = 2;
 }
 
+message DownloadReq {
+    string fileID = 1;
+}
+
+message DownloadResp {
+    string fileID = 1;
+    bytes contents = 2;
+}
+
 message InvitesResp {
     message Invite {
         string inviteID = 1;
